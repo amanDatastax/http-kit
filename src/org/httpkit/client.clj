@@ -68,7 +68,7 @@
                                 (when (:insecure? req) (SslContextFactory/trustAnybody)))
                  :method    (HttpMethod/fromKeyword (or method :get))
                  :headers   (prepare-request-headers req)
-                 ;; :body ring body: null, String, seq, InputStream, File, ByteBuffer
+            ;; :body ring body: null, String, seq, InputStream, File, ByteBuffer
                  :body      (if form-params (query-string form-params) body))]
     (if multipart
       (let [entities (into (map (fn [{:keys [name content filename content-type]}]
@@ -114,40 +114,40 @@
     (or max-connections -1)
     (if address-finder
       (reify HttpClient$AddressFinder
-             (findAddress [this uri] (address-finder uri)))
+        (findAddress [this uri] (address-finder uri)))
       HttpClient$AddressFinder/DEFAULT)
     (if ssl-configurer
       (reify HttpClient$SSLEngineURIConfigurer
-             (configure [this ssl-engine uri] (ssl-configurer ssl-engine uri)))
+        (configure [this ssl-engine uri] (ssl-configurer ssl-engine uri)))
       HttpClient$SSLEngineURIConfigurer/CLIENT_MODE)
     (if error-logger
       (reify ContextLogger
-             (log [this message error] (error-logger message error)))
+        (log [this message error] (error-logger message error)))
       ContextLogger/ERROR_PRINTER)
     (if event-logger
       (reify EventLogger
-             (log [this event] (event-logger event)))
+        (log [this event] (event-logger event)))
       EventLogger/NOP)
     (cond
       (nil? event-names) EventNames/DEFAULT
       (map? event-names) (EventNames. event-names)
       (instance? EventNames
-                 event-names)     event-names
+        event-names)     event-names
       :otherwise         (throw (IllegalArgumentException.
                                   (format "Invalid event-names: (%s) %s"
-                                          (class event-names) (pr-str event-names)))))))
+                                    (class event-names) (pr-str event-names)))))))
 
 (def ^:dynamic ^:private *in-callback* false)
 
 (defn ^:private deadlock-guard [response]
   (let [e #(Exception. "http-kit client deadlock-guard: refusing to deref a request callback from inside a callback. This feature can be disabled with the request's `:deadlock-guard?` option.")]
     (reify
-     clojure.lang.IPending
-     (isRealized [_] (realized? response))
-     clojure.lang.IDeref
-     (deref [_] (if *in-callback* (throw (e)) (deref response)))
-     clojure.lang.IBlockingDeref
-     (deref [_ ms value] (if *in-callback* (throw (e)) (deref response ms value))))))
+      clojure.lang.IPending
+      (isRealized [_] (realized? response))
+      clojure.lang.IDeref
+      (deref [_] (if *in-callback* (throw (e)) (deref response)))
+      clojure.lang.IBlockingDeref
+      (deref [_ ms value] (if *in-callback* (throw (e)) (deref response ms value))))))
 
 (defn request
   "Issues an async HTTP request and returns a promise object to which the value
@@ -212,41 +212,41 @@
   (let [client (or client @default-client)
         {:keys [url method headers body sslengine]} (coerce-req opts)
         deliver-resp #(deliver response ;; deliver the result
-                       (try
-                         (binding [*in-callback* true]
-                           ((or callback identity) %1))
-                         (catch Throwable e
-                           ;; dump stacktrace to stderr
-                           (HttpUtils/printError (str method " " url "'s callback") e)
-                           ;; return the error
-                           {:opts opts :error e})))
+                               (try
+                                 (binding [*in-callback* true]
+                                   ((or callback identity) %1))
+                                 (catch Throwable e
+                                   ;; dump stacktrace to stderr
+                                   (HttpUtils/printError (str method " " url "'s callback") e)
+                                   ;; return the error
+                                   {:opts opts :error e})))
         handler (reify IResponseHandler
-                       (onSuccess [this status headers body]
-                                  (if (and follow-redirects
-                                           (#{301 302 303 307 308} status)) ; should follow redirect
-                                    (if (>= max-redirects (count trace-redirects))
-                                      (let [location (str (.resolve (URI. url) ^String (.get headers "location")))
-                                            change-to-get (and (not allow-unsafe-redirect-methods)
-                                                               (#{301 302 303} status))]
-                                        (request (assoc opts ; follow 301 and 302 redirect
-                                                        :url location
-                                                        :response response
-                                                        :query-params (if change-to-get nil (:query-params opts))
-                                                        :form-params (if change-to-get nil (:form-params opts))
-                                                        :method (if change-to-get
-                                                                  :get ;; change to :GET
-                                                                  (:method opts))  ;; do not change
-                                                        :trace-redirects (conj trace-redirects url))
-                                                 callback))
-                                      (deliver-resp {:opts (dissoc opts :response)
-                                                     :error (Exception. (str "too many redirects: "
-                                                                             (count trace-redirects)))}))
-                                    (deliver-resp {:opts    (dissoc opts :response)
-                                                   :body    body
-                                                   :headers (prepare-response-headers headers)
-                                                   :status  status})))
-                       (onThrowable [this t]
-                                    (deliver-resp {:opts opts :error t})))
+                  (onSuccess [this status headers body]
+                    (if (and follow-redirects
+                             (#{301 302 303 307 308} status)) ; should follow redirect
+                      (if (>= max-redirects (count trace-redirects))
+                        (let [location (str (.resolve (URI. url) ^String (.get headers "location")))
+                              change-to-get (and (not allow-unsafe-redirect-methods)
+                                                 (#{301 302 303} status))]
+                          (request (assoc opts ; follow 301 and 302 redirect
+                                     :url location
+                                     :response response
+                                     :query-params (if change-to-get nil (:query-params opts))
+                                     :form-params (if change-to-get nil (:form-params opts))
+                                     :method (if change-to-get
+                                               :get ;; change to :GET
+                                               (:method opts))  ;; do not change
+                                     :trace-redirects (conj trace-redirects url))
+                                   callback))
+                        (deliver-resp {:opts (dissoc opts :response)
+                                       :error (Exception. (str "too many redirects: "
+                                                               (count trace-redirects)))}))
+                      (deliver-resp {:opts    (dissoc opts :response)
+                                     :body    body
+                                     :headers (prepare-response-headers headers)
+                                     :status  status})))
+                  (onThrowable [this t]
+                    (deliver-resp {:opts opts :error t})))
         listener (RespListener. handler filter worker-pool
                                 ;; only the 4 support now
                                 (case as :auto 1 :text 2 :stream 3 :byte-array 4))
@@ -254,7 +254,7 @@
         connect-timeout (or timeout connect-timeout)
         idle-timeout    (or timeout idle-timeout)
         cfg (RequestConfig. method headers body connect-timeout idle-timeout
-                            keepalive effective-proxy-url tunnel?)]
+              keepalive effective-proxy-url tunnel?)]
     (.exec ^HttpClient client url cfg sslengine listener)
     (if deadlock-guard?
       (deadlock-guard response)
@@ -262,13 +262,13 @@
 
 (defmacro ^:private defreq [method]
   `(defn ~method
-    ~(str "Issues an async HTTP " (str/upper-case method) " request. "
-      "See `request` for details.")
-    ~'{:arglists '([url & [opts callback]] [url & [callback]])}
-    ~'[url & [s1 s2]]
-    (if (or (instance? clojure.lang.MultiFn ~'s1) (fn? ~'s1) (keyword? ~'s1))
-      (request {:url ~'url :method ~(keyword method)} ~'s1)
-      (request (merge ~'s1 {:url ~'url :method ~(keyword method)}) ~'s2))))
+     ~(str "Issues an async HTTP " (str/upper-case method) " request. "
+           "See `request` for details.")
+     ~'{:arglists '([url & [opts callback]] [url & [callback]])}
+     ~'[url & [s1 s2]]
+     (if (or (instance? clojure.lang.MultiFn ~'s1) (fn? ~'s1) (keyword? ~'s1))
+       (request {:url ~'url :method ~(keyword method)} ~'s1)
+       (request (merge ~'s1 {:url ~'url :method ~(keyword method)}) ~'s2))))
 
 (defreq get)
 (defreq delete)

@@ -86,8 +86,8 @@ public class HttpClient implements Runnable {
     }
 
     public HttpClient(long maxConnections, AddressFinder addressFinder, SSLEngineURIConfigurer sslEngineUriConfigurer,
-                      ContextLogger<String, Throwable> errorLogger,
-                      EventLogger<String> eventLogger, EventNames eventNames) throws IOException {
+            ContextLogger<String, Throwable> errorLogger,
+            EventLogger<String> eventLogger, EventNames eventNames) throws IOException {
         this.addressFinder = addressFinder;
         this.sslEngineUriConfigurer = sslEngineUriConfigurer;
         this.errorLogger = errorLogger;
@@ -344,7 +344,7 @@ public class HttpClient implements Runnable {
         }
 
         if ((proxyUri == null && "https".equals(scheme))
-                || (proxyUri != null && "https".equals(proxyUri.getScheme()))) {
+            || (proxyUri != null && "https".equals(proxyUri.getScheme()))) {
             if (engine == null) {
                 engine = DEFAULT_CONTEXT.createSSLEngine();
             }
@@ -352,7 +352,7 @@ public class HttpClient implements Runnable {
                 engine.setUseClientMode(true);
 
             // configure SSLEngine with URI
-            sslEngineUriConfigurer. configure(engine, uri);
+            sslEngineUriConfigurer.configure(engine, uri);
 
             pending.offer(new HttpsRequest(addr, request, cb, requests, cfg, engine));
         } else {
