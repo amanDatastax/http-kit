@@ -10,6 +10,7 @@ import static org.httpkit.server.Frame.CloseFrame.CLOSE_MESG_BIG;
 import static org.httpkit.server.Frame.CloseFrame.CLOSE_NORMAL;
 
 import java.io.IOException;
+import java.io.Closeable;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedSelectorException;
@@ -22,7 +23,10 @@ import java.util.Date;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Callable;
 
 import org.httpkit.HeaderMap;
 import org.httpkit.LineTooLargeException;
@@ -65,10 +69,19 @@ public class HttpServer implements Runnable {
 
     private final ProxyProtocolOption proxyProtocolOption;
 
+    public final String serverHeader;
+
     private Thread serverThread;
 
     // queue operations from worker threads to the IO thread
     private final ConcurrentLinkedQueue<PendingKey> pending = new ConcurrentLinkedQueue<PendingKey>();
+
+    private final ConcurrentHashMap<SelectionKey, Boolean> keptAlive = new ConcurrentHashMap<SelectionKey, Boolean>();
+
+    enum Status { STOPPED, RUNNING, STOPPING }
+
+    // Will not set keep-alive headers when STOPPING, allowing reqs to drain
+    private final AtomicReference<Status> status = new AtomicReference<Status> (Status.STOPPED);
 
     // shared, single thread
     private final ByteBuffer buffer = ByteBuffer.allocateDirect(1024 * 64 - 1);
@@ -88,12 +101,13 @@ public class HttpServer implements Runnable {
     public HttpServer(String ip, int port, IHandler handler, int maxBody, int maxLine, int maxWs,
                       ProxyProtocolOption proxyProtocolOption)
             throws IOException {
-        this(ip, port, handler, maxBody, maxLine, maxWs, proxyProtocolOption,
+        this(ip, port, handler, maxBody, maxLine, maxWs, proxyProtocolOption, "http-kit",
                 ContextLogger.ERROR_PRINTER, DEFAULT_WARN_LOGGER, EventLogger.NOP, EventNames.DEFAULT);
     }
 
     public HttpServer(String ip, int port, IHandler handler, int maxBody, int maxLine, int maxWs,
                       ProxyProtocolOption proxyProtocolOption,
+                      String serverHeader,
                       ContextLogger<String, Throwable> errorLogger,
                       ContextLogger<String, Throwable> warnLogger,
                       EventLogger<String> eventLogger, EventNames eventNames)
@@ -107,6 +121,7 @@ public class HttpServer implements Runnable {
         this.maxBody = maxBody;
         this.maxWs = maxWs;
         this.proxyProtocolOption = proxyProtocolOption;
+        this.serverHeader = serverHeader;
 
         this.selector = Selector.open();
         this.serverChannel = ServerSocketChannel.open();
@@ -133,9 +148,13 @@ public class HttpServer implements Runnable {
     }
 
     private void closeKey(final SelectionKey key, int status) {
+
+        keptAlive.remove(key);
+
         try {
             key.channel().close();
-        } catch (Exception ignore) {
+        } catch (Exception ex) {
+            warnLogger.log("failed to close key", ex);
         }
 
         ServerAtta att = (ServerAtta) key.attachment();
@@ -152,7 +171,13 @@ public class HttpServer implements Runnable {
             do {
                 AsyncChannel channel = atta.channel;
                 HttpRequest request = atta.decoder.decode(buffer);
+
                 if (request != null) {
+
+                    if (status.get() != Status.RUNNING) {
+                        request.isKeepAlive = false;
+                    }
+
                     channel.reset(request);
                     if (request.isWebSocket) {
                         key.attach(new WsAtta(channel, maxWs));
@@ -165,7 +190,7 @@ public class HttpServer implements Runnable {
                     // pipelining not supported : need queue to ensure order
                     atta.decoder.reset();
                 } else if (!sentContinue && atta.decoder.requiresContinue()) {
-                    tryWrite(key, HttpEncode(100, new HeaderMap(), null));
+                    tryWrite(key, HttpEncode(100, new HeaderMap(), null, serverHeader));
                     sentContinue = true;
                 }
             } while (buffer.hasRemaining()); // consume all
@@ -174,11 +199,11 @@ public class HttpServer implements Runnable {
         } catch (RequestTooLargeException e) {
             atta.keepalive = false;
             eventLogger.log(eventNames.serverStatus413);
-            tryWrite(key, HttpEncode(413, new HeaderMap(), e.getMessage()));
+            tryWrite(key, HttpEncode(413, new HeaderMap(), e.getMessage(), serverHeader));
         } catch (LineTooLargeException e) {
             atta.keepalive = false; // close after write
             eventLogger.log(eventNames.serverStatus414);
-            tryWrite(key, HttpEncode(414, new HeaderMap(), e.getMessage()));
+            tryWrite(key, HttpEncode(414, new HeaderMap(), e.getMessage(), serverHeader));
         }
     }
 
@@ -204,9 +229,9 @@ public class HttpServer implements Runnable {
                     atta.keepalive = false;
                     atta.decoder.reset();
 
-                    // Follow RFC6455 5.5.1 
+                    // Follow RFC6455 5.5.1
                     // Do not send CLOSE frame again if it has been sent.
-                    if (!closed) { 
+                    if (!closed) {
                         tryWrite(key, WsEncode(WSDecoder.OPCODE_CLOSE, frame.data));
                     }
                 }
@@ -268,6 +293,7 @@ public class HttpServer implements Runnable {
                 if (toWrites.size() == 0) {
                     if (atta.isKeepAlive()) {
                         key.interestOps(OP_READ);
+                        keptAlive.put(key, true);
                     } else {
                         closeKey(key, CLOSE_NORMAL);
                     }
@@ -337,6 +363,9 @@ public class HttpServer implements Runnable {
                 }
                 Set<SelectionKey> selectedKeys = selector.selectedKeys();
                 for (SelectionKey key : selectedKeys) {
+
+                    keptAlive.remove(key);
+
                     // TODO I do not know if this is needed
                     // if !valid, isAcceptable, isReadable.. will Exception
                     // run hours happily after commented, but not sure.
@@ -357,65 +386,105 @@ public class HttpServer implements Runnable {
                 // do not exits the while IO event loop. if exits, then will not process any IO event
                 // jvm can catch any exception, including OOM
             } catch (Throwable e) { // catch any exception(including OOM), print it
+                status.set(Status.STOPPED);
                 errorLogger.log("http server loop error, should not happen", e);
                 eventLogger.log(eventNames.serverLoopError);
             }
         }
     }
 
-    public void start() throws IOException {
+    public boolean start() throws IOException {
+        if (!status.compareAndSet(Status.STOPPED, Status.RUNNING)) { return false; }
         serverThread = new Thread(this, THREAD_NAME);
         serverThread.start();
+        return true;
     }
 
-    public void stop(int timeout) {
-        try {
-            serverChannel.close(); // stop accept any request
-        } catch (IOException ignore) {
+    public boolean stop(int timeout                         ) { return stop(timeout, null); }
+    public boolean stop(int timeout, final Runnable callback) {
+
+        if (!status.compareAndSet(Status.RUNNING, Status.STOPPING)) { return false; }
+
+        // stop accepting new requests
+        closeAndWarn(serverChannel);
+
+        // Shutdown idle connections
+        for (SelectionKey key : keptAlive.keySet()) {
+            closeKey(key, 0);
         }
 
-        // wait all requests to finish, at most timeout milliseconds
+        // From this point, no new connections should be entering the system.
+        // this.warnLogger.log("Idle connections closed", new Exception("dummy"));
+
+        // Block at most `timeout` msecs waiting for reqs to finish,
+        // otherwise attempt interrupt (non-blocking)
         handler.close(timeout);
 
         // close socket, notify on-close handlers
         if (selector.isOpen()) {
-	    //            Set<SelectionKey> keys = selector.keys();
-	    //            SelectionKey[] keys = t.toArray(new SelectionKey[t.size()]);
-	    boolean cmex = false;
-	    do {
-		cmex = false;
-		try{
-		    for (SelectionKey k : selector.keys()) {
-			/**
-			 * 1. t.toArray will fill null if given array is larger.
-			 * 2. compute t.size(), then try to fill the array, if in the mean time, another
-			 *    thread close one SelectionKey, will result a NPE
-			 *
-			 * https://github.com/http-kit/http-kit/issues/125
-			 */
-			if (k != null)
-			    closeKey(k, 0); // 0 => close by server
-		    }
-		} catch(java.util.ConcurrentModificationException ex) {
-		    /**
-		     * The iterator will throw a CMEx as soon as we close an open connection. Since there
-		     * seems to be no other way to safely iterate over all keys we just catch the exception
-		     * and try again until we manage to notify all open connections.
-		     *
-		     * https://github.com/http-kit/http-kit/issues/355
-		     */
-		        cmex = true;
-		}		
-	    } while(cmex);
+            //            Set<SelectionKey> keys = selector.keys();
+            //            SelectionKey[] keys = t.toArray(new SelectionKey[t.size()]);
+            boolean cmex = false;
+            do {
+                cmex = false;
+                try{
+                    for (SelectionKey k : selector.keys()) {
+                        /**
+                         * 1. t.toArray will fill null if given array is larger.
+                         * 2. compute t.size(), then try to fill the array, if in the mean time, another
+                         *    thread close one SelectionKey, will result a NPE
+                         *
+                         * https://github.com/http-kit/http-kit/issues/125
+                         */
+                        if (k != null)
+                            closeKey(k, 0); // 0 => close by server
+                    }
+                } catch(java.util.ConcurrentModificationException ex) {
+                    /**
+                     * The iterator will throw a CMEx as soon as we close an open connection. Since there
+                     * seems to be no other way to safely iterate over all keys we just catch the exception
+                     * and try again until we manage to notify all open connections.
+                     *
+                     * https://github.com/http-kit/http-kit/issues/355
+                     */
+                    cmex = true;
+                }
+            } while(cmex);
 
-            try {
-                selector.close();
-            } catch (IOException ignore) {
-            }
+            closeAndWarn(selector);
         }
+
+        // Start daemon thread to run once serverThread actually completes.
+        // This could take some time if handler.close() was struggling to
+        // actually kill some tasks.
+        Thread cbThread = new Thread(new Runnable() {
+                public void run() {
+                    try { serverThread.join(); } catch (InterruptedException e) { }
+                    if (callback != null) {
+                        try { callback.run(); } catch (Throwable t) { }
+                    }
+                    status.set(Status.STOPPED);
+                }
+            });
+
+        cbThread.setDaemon(true);
+        cbThread.start();
+
+        return true;
     }
 
     public int getPort() {
         return this.serverChannel.socket().getLocalPort();
+    }
+
+    public Status  getStatus() { return status.get();           }
+    public boolean isAlive()   { return serverThread.isAlive(); }
+
+    void closeAndWarn(Closeable closable) {
+        try {
+            closable.close();
+        } catch (IOException ex) {
+            warnLogger.log(String.format("failed to close %s", closable.getClass().getName()), ex);
+        }
     }
 }

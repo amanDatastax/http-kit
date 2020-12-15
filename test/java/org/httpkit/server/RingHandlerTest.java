@@ -29,7 +29,7 @@ public class RingHandlerTest {
     public void shouldUseExternalThreadPoolForExecution() throws InterruptedException, ProtocolException, LineTooLargeException, RequestTooLargeException {
         Vector<String> assertionItems = new Vector<String>();
 
-        ExecutorService testWorkerPool = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue(2));
+        ExecutorService testWorkerPool = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<Runnable>(2));
         RingHandler ringHandler = new RingHandler(new MockClojureHandler(aDummyResponse()), testWorkerPool);
         ringHandler.handle(aDummyRequest(), new MockRespCallback(assertionItems));
 
@@ -42,7 +42,7 @@ public class RingHandlerTest {
     public void shouldUseInternalThreadPoolForExecution() throws InterruptedException, ProtocolException, LineTooLargeException, RequestTooLargeException {
         Vector<String> assertionItems = new Vector<String>();
 
-        RingHandler ringHandler = new RingHandler(1, new MockClojureHandler(aDummyResponse()), "some-prefix", 2);
+        RingHandler ringHandler = new RingHandler(1, new MockClojureHandler(aDummyResponse()), "some-prefix", 2, "http-kit");
         ringHandler.handle(aDummyRequest(), new MockRespCallback(assertionItems));
 
         Thread.sleep(50);
@@ -71,7 +71,26 @@ public class RingHandlerTest {
 
     private HttpRequest asHttpRequest(String... requestLines) throws ProtocolException, LineTooLargeException, RequestTooLargeException {
         httpDecoder.reset();
-        String joinedRequest = String.join("\n", requestLines);
+        
+        // String joinedRequest = String.join("\n", requestLines); 
+        // String.join is was only released in 1.8
+        
+        String joinedRequest = "";
+        int requestLength = requestLines.length;
+
+        if (requestLines != null && requestLength > 0) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < requestLength; i++) {
+
+                sb.append(requestLines[i]);
+
+                if (i != requestLength - 1) {
+                    sb.append("\n");
+                }
+
+            }
+            joinedRequest = sb.toString();
+        }
         return httpDecoder.decode(ByteBuffer.wrap((joinedRequest + "\n\n").getBytes()));
     }
 

@@ -10,11 +10,13 @@
                    [route :only [not-found]])
         (clojure.tools [logging :only [info warn]]))
   (:require [org.httpkit.client :as http]
+            [org.httpkit.sni-client :as sni]
             [clojure.java.io :as io]
             [clj-http.client :as clj-http])
   (:import java.nio.ByteBuffer
-           [org.httpkit HttpMethod HttpStatus HttpVersion]
-           [org.httpkit.client Decoder IRespListener]))
+           [org.httpkit HttpMethod HttpStatus HttpVersion DynamicBytes]
+           [org.httpkit.client Decoder IRespListener ClientSslEngineFactory]
+           [javax.net.ssl SSLHandshakeException SSLException SSLContext]))
 
 (defroutes test-routes
   (GET "/get" [] "hello world")
@@ -28,7 +30,10 @@
                             {:status 200 :body (-> req :request-method name)}
                             {:status code
                              :headers {"location" (str "redirect?total=" total "&n=" (inc n)
-                                                       "&code=" code)}}))))
+                                                    "&code=" code)}}))))
+  (ANY "/redirect-nil" [] (fn [req]
+                            {:status 302
+                             :headers nil}))
   (POST "/multipart" [] (fn [req]
                           (->> req
                                :params
@@ -60,7 +65,8 @@
   (PUT "/body" [] (fn [req] {:body (:body req)
                              :status 200
                              :headers {"content-type" "text/plain"}}))
-  (GET "/test-header" [] (fn [{:keys [headers]}] (str (get headers "test-header")))))
+  (GET "/test-header" [] (fn [{:keys [headers]}] (str (get headers "test-header"))))
+  (GET "/zip" [] (fn [req] {:body "hello world"})))
 
 (use-fixtures :once
   (fn [f]
@@ -292,26 +298,96 @@
                                      (assoc (rand-keep-alive) :insecure? true))
                           :body count)))))))
 
+(deftest test-misc-https-certs
+  ;; Check to make sure an https connection works using the default trust store.
+  (is (contains? @(http/get "https://status.github.com/api/status.json") :status))
+  (is (contains? @(http/get "https://google.com") :status))
+  (is (contains? @(http/get "https://apple.com") :status))
+  (is (contains? @(http/get "https://microsoft.com") :status))
+  (is (contains? @(http/get "https://letsencrypt.org") :status)))
+
+(deftest test-multiple-https-calls-with-same-engine
+  (let [opts {:sslengine (ClientSslEngineFactory/trustAnybody)}]
+    (is (contains? @(http/get "https://localhost:9898" opts) :status))
+    (is (contains? @(http/get "https://localhost:9898" opts) :status))
+    (is (contains? @(http/get "https://localhost:9898" opts) :status))))
+
+(deftest test-default-sni-client
+  (testing "`sni/default-client` behaves similarly to `URL.openStream()`"
+    (let [sslengine (http/make-ssl-engine)
+          https-client @sni/default-client
+          url0 "https://www.bbc.co.uk"
+          url1 "https://wrong.host.badssl.com"
+          url2 "https://self-signed.badssl.com"
+          url3 "https://untrusted-root.badssl.com"]
+
+      (is (nil?
+            (:error
+             @(http/request
+                {:client  https-client
+                 :sslengine sslengine
+                 :keepalive -1
+                 :url url0}))))
+
+      (when (>= @@#'sni/java-version_ 11)
+        ;; Specific type depends on JVM version- could be e/o
+        ;; #{SSLHandshakeException RuntimeException ...}
+        (is (instance? Exception
+              (:error
+               @(http/request
+                  {:client https-client
+                   :sslengine sslengine
+                   :keepalive -1
+                   :url url1})))))
+
+      (is (instance? #_SSLException Exception
+                     (:error
+                       @(http/request
+                          {:client  https-client
+                           :sslengine sslengine
+                           :keepalive -1
+                           :url url2}))))
+
+      (is (instance? #_SSLException Exception
+                     (:error
+                       @(http/request
+                          {:client  https-client
+                           :sslengine sslengine
+                           :keepalive -1
+                           :url url3})))))))
+
 ;; https://github.com/http-kit/http-kit/issues/54
 (deftest test-nested-param
   (let [url "http://localhost:4347/nested-param"
         params {:card {:number "4242424242424242" :exp_month "12"}}]
     (is (= params (read-string (:body @(http/post url {:form-params params})))))
+
+    (is (= params (read-string (:body @(http/post
+                                        url
+                                        {:query-params {"card[number]" 4242424242424242
+                                                       "card[exp_month]" 12}})))))
+    (is (= params (read-string (:body (clj-http/post url {:query-params params})))))
+
+    ;; clj-http doesn't actually process these as nested params anymore. Leaving
+    ;; to maintain backward compatibility
     (is (= params (read-string (:body @(http/post
                                         url
                                         {:form-params {"card[number]" 4242424242424242
-                                                       "card[exp_month]" 12}})))))
-    (is (= params (read-string (:body (clj-http/post url {:form-params params})))))))
+                                                       "card[exp_month]" 12}})))))))
 
 (deftest test-redirect
-  (let [url "http://localhost:4347/redirect?total=5&n=0"]
-    (is (:error @(http/get url {:max-redirects 3}))) ;; too many redirects
-    (is (= 200 (:status @(http/get url {:max-redirects 6}))))
-    (is (= 302 (:status @(http/get url {:follow-redirects false}))))
-    (is (= "get" (:body @(http/post url {:as :text})))) ; should switch to get method
-    (is (= "post" (:body @(http/post url {:as :text :allow-unsafe-redirect-methods true})))) ; should not change method
-    (is (= "post" (:body @(http/post (str url "&code=307") {:as :text})))) ; should not change method
-))
+  (testing "When location header is"
+    (testing "present"
+      (let [url "http://localhost:4347/redirect?total=5&n=0"]
+        (is (:error @(http/get url {:max-redirects 3})))        ;; too many redirects
+        (is (= 200 (:status @(http/get url {:max-redirects 6}))))
+        (is (= 302 (:status @(http/get url {:follow-redirects false}))))
+        (is (= "get" (:body @(http/post url {:as :text}))))     ; should switch to get method
+        (is (= "post" (:body @(http/post url {:as :text :allow-unsafe-redirect-methods true})))) ; should not change method
+        (is (= "post" (:body @(http/post (str url "&code=307") {:as :text})))))) ; should not change method
+    (testing "nil"
+      (let [url "http://localhost:4347/redirect-nil"]
+           (is (:error  @(http/get url)))))))
 
 (deftest test-multipart
   (let [{:keys [status body]} @(http/post "http://localhost:4347/multipart"
@@ -459,6 +535,9 @@
       (let [{:keys [error]} (bad-callback loop-depth true)]
         (is (= nil error)))
       (println "Skipping disabled-deadlock-guard test due to low CPU count."))))
+
+(deftest zip
+  (is (instance? DynamicBytes (:body @(http/get "http://localhost:4347/zip" {:as :none})))))
 
 ;; @(http/get "http://127.0.0.1:4348" {:headers {"Connection" "Close"}})
 

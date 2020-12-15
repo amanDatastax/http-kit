@@ -4,12 +4,13 @@
             [org.httpkit.encode :refer [base64-encode]])
   (:use [clojure.walk :only [prewalk]])
   (:import [org.httpkit.client HttpClient HttpClient$AddressFinder HttpClient$SSLEngineURIConfigurer
-            IResponseHandler RespListener IFilter RequestConfig]
+                               IResponseHandler RespListener IFilter RequestConfig]
            [org.httpkit.logger ContextLogger EventLogger EventNames]
            [org.httpkit HttpMethod PrefixThreadFactory HttpUtils]
            [java.util.concurrent ThreadPoolExecutor LinkedBlockingQueue TimeUnit]
            [java.net URI URLEncoder]
-           [org.httpkit.client SslContextFactory MultipartEntity]))
+           [org.httpkit.client ClientSslEngineFactory MultipartEntity]
+           [javax.net.ssl SSLContext SSLEngine]))
 
 ;;;; Utils
 
@@ -24,11 +25,11 @@
 
 (defn- prepare-request-headers
   [{:keys [headers form-params basic-auth oauth-token user-agent] :as req}]
-  (merge headers
-         (when form-params {"Content-Type"  "application/x-www-form-urlencoded"})
-         (when basic-auth  {"Authorization" (basic-auth-value basic-auth)})
-         (when oauth-token {"Authorization" (str "Bearer " oauth-token)})
-         (when user-agent  {"User-Agent"    user-agent})))
+  (cond-> headers
+    form-params (assoc "Content-Type"  "application/x-www-form-urlencoded")
+    basic-auth  (assoc "Authorization" (basic-auth-value basic-auth))
+    oauth-token (assoc "Authorization" (str "Bearer " oauth-token))
+    user-agent  (assoc "User-Agent"    user-agent)))
 
 (defn- prepare-response-headers [headers]
   (reduce (fn [m [k v]] (assoc m (keyword k) v)) {} headers))
@@ -44,7 +45,7 @@
                d))
            params))
 
-(defn- query-string
+(defn query-string
   "Returns URL-encoded query string for given params map."
   [m]
   (let [m (nested-param m)
@@ -57,15 +58,14 @@
 (comment (query-string {:k1 "v1" :k2 "v2" :k3 nil :k4 ["v4a" "v4b"] :k5 []}))
 
 (defn- coerce-req
-  [{:keys [url method body insecure? query-params form-params multipart] :as req}]
+  [{:keys [url method body sslengine insecure? query-params form-params multipart] :as req}]
   (let [r (assoc req
                  :url (if query-params
                         (if (neg? (.indexOf ^String url (int \?)))
                           (str url "?" (query-string query-params))
                           (str url "&" (query-string query-params)))
                         url)
-                 :sslengine (or (:sslengine req)
-                                (when (:insecure? req) (SslContextFactory/trustAnybody)))
+                 :sslengine (or sslengine (when insecure? (ClientSslEngineFactory/trustAnybody)))
                  :method    (HttpMethod/fromKeyword (or method :get))
                  :headers   (prepare-request-headers req)
             ;; :body ring body: null, String, seq, InputStream, File, ByteBuffer
@@ -96,6 +96,31 @@
 ;;; "Get the default client. Normally, you only need one client per application. You can config parameter per request basic"
 (defonce default-client (delay (HttpClient.)))
 
+(defn make-ssl-engine
+  "Returns an SSLEngine using default or given SSLContext."
+  (^SSLEngine [               ] (make-ssl-engine (SSLContext/getDefault)))
+  (^SSLEngine [^SSLContext ctx] (.createSSLEngine ctx)))
+
+(defonce
+  ^{:dynamic true
+    :doc "Specifies the default HttpClient used by the `request` function.
+Value may be a delay.
+
+A common use case is to replace the default (non-SNI-capable) client with
+an SNI-capable one, e.g.:
+
+  (:require [org.httpkit.sni-client :as sni-client]) ; Needs Java >= 8
+
+  ;; Change default client for your whole application:
+  (alter-var-root #'org.httpkit.client/*default-client* (fn [_] sni-client/default-client))
+
+  ;; or temporarily change default client for a particular thread context:
+  (binding [org.httpkit.client/*default-client* sni-client/default-client]
+    <...>)
+
+ See also `make-client`."}
+  *default-client* default-client)
+
 (defn make-client
   "Returns an HttpClient with specified options:
     :max-connections    ; Max connection count, default is unlimited (-1)
@@ -103,13 +128,15 @@
     :ssl-configurer     ; (fn [javax.net.ssl.SSLEngine java.net.URI])
     :error-logger       ; (fn [text ex])
     :event-logger       ; (fn [event-name])
-    :event-names        ; {<http-kit-event-name> <loggable-event-name>}"
+    :event-names        ; {<http-kit-event-name> <loggable-event-name>}
+    :bind-address       ; when present will pass local address to SocketChannel.bind()"
   [{:keys [max-connections
            address-finder
            ssl-configurer
            error-logger
            event-logger
-           event-names]}]
+           event-names
+           bind-address]}]
   (HttpClient.
     (or max-connections -1)
     (if address-finder
@@ -135,7 +162,8 @@
         event-names)     event-names
       :otherwise         (throw (IllegalArgumentException.
                                   (format "Invalid event-names: (%s) %s"
-                                    (class event-names) (pr-str event-names)))))))
+                                    (class event-names) (pr-str event-names)))))
+    bind-address))
 
 (def ^:dynamic ^:private *in-callback* false)
 
@@ -186,6 +214,8 @@
   (request {:url \"http://site.com/string.txt\" :as :text})
   ;; Try to automatically coerce the output based on the content-type header, currently supports :text :stream, (with automatic charset detection)
   (request {:url \"http://site.com/string.txt\" :as :auto})
+  ;; return the body as is with no unzipping or coercion whatsoever. returns as org.httpkit.DynamicBytes
+  (request {:url \"http://site.com/favicon.ico\" :as :none})
 
   Request options:
     :url :method :headers :timeout :connect-timeout :idle-timeout :query-params
@@ -209,7 +239,7 @@
          proxy-port -1
          proxy-url nil}}
    & [callback]]
-  (let [client (or client @default-client)
+  (let [client (or client (force *default-client*))
         {:keys [url method headers body sslengine]} (coerce-req opts)
         deliver-resp #(deliver response ;; deliver the result
                                (try
@@ -225,20 +255,23 @@
                     (if (and follow-redirects
                              (#{301 302 303 307 308} status)) ; should follow redirect
                       (if (>= max-redirects (count trace-redirects))
-                        (let [location (str (.resolve (URI. url) ^String (.get headers "location")))
-                              change-to-get (and (not allow-unsafe-redirect-methods)
-                                                 (#{301 302 303} status))]
-                          (request (assoc opts ; follow 301 and 302 redirect
-                                     :url location
-                                     :response response
-                                     :query-params (if change-to-get nil (:query-params opts))
-                                     :form-params (if change-to-get nil (:form-params opts))
-                                     :method (if change-to-get
-                                               :get ;; change to :GET
-                                               (:method opts))  ;; do not change
-                                     :trace-redirects (conj trace-redirects url))
-                                   callback))
-                        (deliver-resp {:opts (dissoc opts :response)
+                        (if-let [^String location-header (.get headers "location")]
+                          (let [redirect-location (str (.resolve (URI. url) location-header))
+                                change-to-get (and (not allow-unsafe-redirect-methods)
+                                                   (#{301 302 303} status))]
+                            (request (assoc opts          ; follow 301 and 302 redirect
+                                       :url redirect-location
+                                       :response response
+                                       :query-params (if change-to-get nil (:query-params opts))
+                                       :form-params (if change-to-get nil (:form-params opts))
+                                       :method (if change-to-get
+                                                 :get     ;; change to :GET
+                                                 (:method opts)) ;; do not change
+                                       :trace-redirects (conj trace-redirects url))
+                              callback))
+                          (deliver-resp {:opts  (dissoc opts :response)
+                                         :error (Exception. (str "No location header is present on redirect response"))}))
+                        (deliver-resp {:opts  (dissoc opts :response)
                                        :error (Exception. (str "too many redirects: "
                                                                (count trace-redirects)))}))
                       (deliver-resp {:opts    (dissoc opts :response)
@@ -248,8 +281,9 @@
                   (onThrowable [this t]
                     (deliver-resp {:opts opts :error t})))
         listener (RespListener. handler filter worker-pool
-                                ;; only the 4 support now
-                                (case as :auto 1 :text 2 :stream 3 :byte-array 4))
+                                ;; 0 will return as DynamicBytes - i.e. you will need to handle unzip yourself
+                                ;; otherwise, there are 4 coercions supported for now
+                                (case as :none 0 :auto 1 :text 2 :stream 3 :byte-array 4))
         effective-proxy-url (if proxy-host (str proxy-host ":" proxy-port) proxy-url)
         connect-timeout (or timeout connect-timeout)
         idle-timeout    (or timeout idle-timeout)

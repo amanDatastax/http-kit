@@ -1,3 +1,196 @@
+> This project uses [Break Versioning](https://github.com/ptaoussanis/encore/blob/master/BREAK-VERSIONING.md) as of **Sep 18, 2020**.
+
+## v2.5.0 (2020 Sep 18)
+
+```clojure
+[http-kit "2.5.0"]
+```
+
+> **Bumps minimum JVM version from 1.6 to 1.7**. _Should_ otherwise be non-breaking.  
+> See [here](https://github.com/ptaoussanis/encore#recommended-steps-after-any-significant-dependency-update) recommended steps when updating any Clojure/Script dependencies.
+
+Identical to `v2.5.0-RC1`.
+
+#### Changes since `2.4.0`
+
+* **BREAKING**: bump minimum JVM version from 1.6 to 1.7
+* [#438 #439][Server] Stop using `sun.misc.Unsafe` (@kirked)
+
+#### New since `2.4.0`
+
+* [#434][Client] GraalVM Native Image Compatibility: move SSL initialisation to constructor (@alekcz)
+* [#433 #432 #129] [Server] Configurable server header (@barkanido)
+* [#441][Server] Add 1-arity `server-stop!`
+
+#### Fixes since `2.4.0`
+
+* [#429] Fix flaky server-status tests
+* [Server][Tests] Fix lint issue with newer JDKs
+
+
+## v2.5.0-RC1 (2020 Sep 10)
+
+```clojure
+[http-kit "2.5.0-RC1"]
+```
+
+> **Bumps minimum JVM version from 1.6 to 1.7**. _Should_ otherwise be non-breaking.  
+> See [here](https://github.com/ptaoussanis/encore#recommended-steps-after-any-significant-dependency-update) recommended steps when updating any Clojure/Script dependencies.
+
+#### Changes since `2.4.0`
+
+* **BREAKING**: bump minimum JVM version from 1.6 to 1.7
+* [#438 #439][Server] Stop using `sun.misc.Unsafe` (@kirked)
+
+#### New since `2.4.0`
+
+* [#434][Client] GraalVM Native Image Compatibility: move SSL initialisation to constructor (@alekcz)
+* [#433 #432 #129] [Server] Configurable server header (@barkanido)
+* [#441][Server] Add 1-arity `server-stop!`
+
+#### Fixes since `2.4.0`
+
+* [#429] Fix flaky server-status tests
+* [Server][Tests] Fix lint issue with newer JDKs
+
+
+## 2.4.0 (2020 Jul 30)
+
+```clojure
+[http-kit "2.4.0"]
+```
+
+Identical to `2.4.0-RC1`, `2.4.0-beta1`.
+
+Upgrade from `2.3.x` **should be non-breaking**, but please evaluate before using in production (and please report any problems!).
+
+[Server] **DEPRECATION NOTICE**: `with-channel` macro has been deprecated due to possible race conditions [#318]. Please prefer new `as-channel` fn instead. Migration is straightforward; please see `as-channel` docstring for usage info.
+
+#### Changes since `2.3.0`
+
+* [#318][#391] [Server] **DEPRECATE** `with-channel`, add `as-channel`
+* [#399][Server] Graceful Shutdown (@glenjamin)
+* [#427] [Client] Improve performance of `prepare-request-headers` (@bsless)
+
+#### New since `2.3.0`
+
+* [#412 #383 #388] Java 11 support (@ryfow, @RokLenarcic)
+* [#426 #422 #393 #334 #187] [Client] Add a drop-in SNI-capable client (@fpischedda, @jimpil)
+* [#422] [Client] Provide a dynamic var to override default client (@fpischedda)
+* [#318][#391] [Server] `as-channel`: add :init hook
+* [Server] Optional new return value for `run-server`, new fns: `server-port`, `server-status`, `server-shutdown!`
+* [#429 #186] [Server] `server-stop!` now returns a promise (@alekcz, @ptaoussanis)
+* [#395] [Server] Add keywords to cover missing WebSocket status codes (@daviesian)
+* [#374] [Client] Allow specification of local address when making requests (@snoe)
+* [#379] [Server] Support byte[] responses (@ikitommi)
+* [#389] [Client] Make `query-string` public (@kirked)
+* [#400 #402] [Client] Add :none coercion option to return byte-array (@ethpran)
+* [#403 #415] [Client] Add error message when no location header is present (@BadAlgorithm)
+
+#### Fixes since `2.3.0`
+
+* [#410 #419] [Server] Special-case the parsing for ipv6, if the host header starts with `[` (@blak3mill3r)
+* [#384] [Server] Fix typo in `run-server` doc-string (@dsdolzhenko)
+
+
+## 2.4.0-RC1 (2020 Jul 25)
+
+```clojure
+[http-kit "2.4.0-beta1"]
+```
+
+Identical to `2.4.0-beta1`.
+
+## 2.4.0-beta1 (2020 Jul 21)
+
+```clojure
+[http-kit "2.4.0-beta1"]
+```
+
+Should be **non-breaking** but as usual, please evaluate before using in production (and please report any problems!).
+
+Items new since `2.4.0-alpha6` prefixed with ++.
+
+#### Changes since `2.3.0`
+
+* [#318][#391] [Server][Experimental] Deprecate `with-channel`, add `as-channel`
+* [#399][Server] Graceful Shutdown (@glenjamin)
+* ++ [#427] [Client] Improve performance of `prepare-request-headers` (@bsless)
+
+#### New since `2.3.0`
+
+* [#412 #383 #388] Java 11 support (@ryfow, @RokLenarcic)
+* [#426 #422 #393 #334 #187] [Client] Add a drop-in SNI-capable client (@fpischedda, @jimpil)
+* [#422] [Client] Provide a dynamic var to override default client (@fpischedda)
+* ++ [#318][#391] [Server] `as-channel`: add :init hook
+* ++ [Server] New return value for `run-server`, new fns: `server-port`, `server-status`, `server-shutdown!`
+* ++ [#429 #186] [Server] `server-stop!` now returns a promise (@alekcz, @ptaoussanis)
+* [#395] [Server] Add keywords to cover missing WebSocket status codes (@daviesian)
+* [#374] [Client] Allow specification of local address when making requests (@snoe)
+* [#379] [Server] Support byte[] responses (@ikitommi)
+* [#389] [Client] Make `query-string` public (@kirked)
+* [#400 #402] [Client] Add :none coercion option to return byte-array (@ethpran)
+* [#403 #415] [Client] Add error message when no location header is present (@BadAlgorithm)
+
+#### Fixes since `2.3.0`
+
+* [#410 #419] [Server] Special-case the parsing for ipv6, if the host header starts with `[` (@blak3mill3r)
+* [#384] [Server] Fix typo in `run-server` doc-string (@dsdolzhenko)
+
+
+## 2.4.0-alpha6 (2020 Feb 15)
+
+```clojure
+[http-kit "2.4.0-alpha6"]
+```
+
+> As usual, please evaluate before using in production (and **please report any problems!**).
+
+#### Changes since 2.3.0
+
+* [#318][#391] [Server][Experimental] Deprecate `with-channel`, add `as-channel`
+* [#399][Server] Graceful Shutdown (@glenjamin)
+
+#### New since 2.3.0
+
+* [#412 #383 #388] Java 11 support (@ryfow, @RokLenarcic)
+* [#426 #422 #393 #334 #187] [Client] Add a drop-in SNI-capable client (@fpischedda, @jimpil)
+* [#422] [Client] Provide a dynamic var to override default client (@fpischedda)
+* [#395] [Server] Add keywords to cover missing WebSocket status codes (@daviesian)
+* [#374] [Client] Allow specification of local address when making requests (@snoe)
+* [#379] [Server] Support byte[] responses (@ikitommi)
+* [#389] [Client] Make `query-string` public (@kirked)
+* [#400 #402] [Client] Add :none coercion option to return byte-array (@ethpran)
+* [#403 #415] [Client] Add error message when no location header is present (@BadAlgorithm)
+
+#### Fixes since 2.3.0
+
+* [#410 #419] [Server] Special-case the parsing for ipv6, if the host header starts with `[` (@blak3mill3r)
+* [#384] [Server] Fix typo in `run-server` doc-string (@dsdolzhenko)
+
+## 2.4.0-alpha3 (2019 Jan 19)
+
+```clojure
+[http-kit "2.4.0-alpha3"]
+```
+
+> As usual, please evaluate before using in production (and **please report any problems!**).
+
+#### Changes
+
+* [#391 #318 #46] [Server] BREAKING: ensure WS on-receive is ready before first message arrives (@huahaiy)
+
+#### New stuff
+
+* [#383 #388] Java 11 support (@ryfow)
+* [#374] [Client] Allow specification of local address when making requests (@snoe)
+* [#379] [Server] Support byte[] responses (@ikitommi)
+
+#### Fixes
+
+* [#384] [Server] Fix typo in `run-server` doc-string (@dsdolzhenko)
+
+
 ## 2.3.0 (2018 Apr 21)
 
 ```clojure
@@ -14,19 +207,19 @@ A big thank you to all the [contributors for this release](https://github.com/ht
 
 #### New stuff
 
+* [#345 #372] Client: add deadlock-guard for callbacks (@Chouser), enabled by default (could be **BREAKING**, disable using `:deadlock-guard?` option).
 * [#315] Client: now have separate `:connect-timeout` and `:idle-timeout` opts (@kmate)
+* [#329] Client: support numbers in multipart messages, and throw on unkown multipart params types (@dmichulke)
+* [#303] Client: replace :proxy-host, :proxy-port -> :proxy-url (@taso42)
+* [#335] Client: allow custom SSLEngine config, make way for fixing #187 (@kumarshantanu)
+* [#323 #333] Client, server: add metrics/logging instrumentation (@kumarshantanu)
 * [#307 #231] Server: add :worker-pool opt (@kaibra)
 * [#309 #310] Server: add missing 'MKCOL' http method enum (@zilti)
-* [#329] Client: support numbers in multipart messages, and throw on unkown multipart params types (@dmichulke)
 * [#300] Server: add getCount method to BytesInputStream (@MysteryMachine)
-* [#335] Make way for fixing #187 (@kumarshantanu)
-* [#323 333] Metrics/logging instrumentation (@kumarshantanu)
 
 #### General improvements
 
-* [#345 #372] Client: add deadlock-guard for callbacks (@Chouser), enabled by default (could be **BREAKING**, disable using `:deadlock-guard?` option).
 * [#330] Server: don't override Date header if it's been set by application (@ryfow)
-* [#303] Client: replace :proxy-host, :proxy-port -> :proxy-url (@taso42)
 * [#341 #196] Server: increase max-line default value to conform to nginx defaults (@Kjir)
 * Client: deref default-client ONLY-when client not specified (@kumarshantanu)
 * [#353] Tidy up some tests (@glenford)
@@ -35,8 +228,8 @@ A big thank you to all the [contributors for this release](https://github.com/ht
 
 * [#332 #322] Server: do not respond to unsolicited pong frames (@mikkosuonio)
 * [#319] Server: fix the 'Close received after close' issue for WS implementation (@zhming0)
+* [#356 #370] Client, server: fix `base64-encoder` for Java 9 (@claj @benalbrecht)
 * [#361 #362] Client: fix bug in parsing logic for chunked responses (@rkaippully)
-* [#356 #370] Fix `base64-encoder` for Java 9 (@claj @benalbrecht)
 
 ## 2.3.0-RC1 (2018 Apr 9)
 

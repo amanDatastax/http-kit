@@ -99,6 +99,8 @@ public class HttpUtils {
         } else if (body instanceof InputStream) {
             DynamicBytes b = readAll((InputStream) body);
             return ByteBuffer.wrap(b.get(), 0, b.length());
+        } else if (body instanceof byte[]) {
+            return ByteBuffer.wrap((byte[]) body);
         } else if (body instanceof File) {
             // serving file is better be done by Nginx
             return readAll((File) body);
@@ -437,6 +439,10 @@ public class HttpUtils {
     public static final String CL = "Content-Length";
 
     public static ByteBuffer[] HttpEncode(int status, HeaderMap headers, Object body) {
+        return HttpEncode(status, headers, body, null);
+    }
+
+    public static ByteBuffer[] HttpEncode(int status, HeaderMap headers, Object body, String serverHeader) {
         ByteBuffer bodyBuffer;
         try {
             bodyBuffer = bodyBuffer(body);
@@ -456,8 +462,8 @@ public class HttpUtils {
             headers.put(CL, Integer.toString(b.length));
             bodyBuffer = ByteBuffer.wrap(b);
         }
-        if (!headers.containsKey("Server")) {
-          headers.put("Server", "http-kit");
+        if (serverHeader != null && !headers.containsKey("Server")) {
+          headers.put("Server", serverHeader);
         }
         if (!headers.containsKey("Date")) {
           headers.put("Date", DateFormatter.getDate()); // rfc says the Date is needed

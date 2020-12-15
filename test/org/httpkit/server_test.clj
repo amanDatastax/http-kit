@@ -14,6 +14,7 @@
             [clj-http.util :as u])
   (:import [java.io File FileOutputStream FileInputStream]
            org.httpkit.SpecialHttpClient
+           (java.nio.file Files)
            (java.util.concurrent ThreadPoolExecutor TimeUnit ArrayBlockingQueue)))
 
 (defn file-handler [req]
@@ -26,6 +27,12 @@
         file (gen-tempfile l ".txt")]
     {:status 200
      :body (FileInputStream. file)}))
+
+(defn bytearray-handler [req]
+  (let [l (-> req :params :l to-int)
+        file (gen-tempfile l ".txt")]
+    {:status 200
+     :body (Files/readAllBytes (.toPath file))}))
 
 (defn many-headers-handler [req]
   (let [count (or (-> req :params :count to-int) 20)]
@@ -67,7 +74,7 @@
                          {:body p})
                false))        ;; do not close
       (send! channel "" true) ;; same as (close channel)
-)))
+      )))
 
 (defn slow-server-handler [req]
   (with-channel req channel
@@ -121,6 +128,7 @@
                     (on-receive con (fn [mesg] (send! con mesg))))))
   (context "/ws2" [] ws/test-routes)
   (GET "/inputstream" [] inputstream-handler)
+  (GET "/bytearray" [] bytearray-handler)
   (POST "/multipart" [] multipart-handler)
   (POST "/chunked-input" [] (fn [req] {:status 200
                                        :body (str (:content-length req))}))
@@ -209,6 +217,13 @@
       (is (= (:status resp) 200))
       (is (= length (count (:body resp)))))))
 
+(deftest test-body-bytearray
+  (doseq [length (range 1 (* 1024 1024 5) 1439987)] ; max 5m, many files
+    (let [uri (str "http://localhost:4347/bytearray?l=" length)
+          resp (http/get uri)]
+      (is (= (:status resp) 200))
+      (is (= length (count (:body resp)))))))
+
 ;; https://github.com/http-kit/http-kit/issues/127
 (deftest test-wrong-content-length
   (doseq [length (range 1 1000 333)] ; max 5m, many files
@@ -227,6 +242,21 @@
   (let [resp (http/get "http://localhost:4347/null")]
     (is (= (:status resp) 200))
     (is (= "" (:body resp)))))
+
+(deftest ipv6-host-header
+  (let [resp (http/get "http://localhost:4347/"
+                       {:headers {"host" "[::ffff:a9fe:a9fe]"}})]
+    (is (= 200 (:status resp)))))
+
+(deftest ipv6-host-header-with-port
+  (let [resp (http/get "http://localhost:4347/"
+                       {:headers {"host" "[::ffff:a9fe:a9fe]:80"}})]
+    (is (= 200 (:status resp)))))
+
+(deftest ipv6-blank-host-header
+  (let [resp (http/get "http://localhost:4347/"
+                       {:headers {"host" ""}})]
+    (is (= 200 (:status resp)))))
 
 ;;;;; async
 
@@ -349,7 +379,7 @@
                                                      :queue-size 102400}))
   (println "server started at 0.0.0.0:9090"))
 
-;;; Test graceful shutdown
+;;; Test graceful stopping
 (defn- slow-request-handler [sleep-time]
   (fn [request]
     (try
@@ -370,7 +400,7 @@
                (get "Date"))))
     (server)))
 
-(deftest test-immediate-close-kills-inflight-requests
+(deftest test-immediate-stop-kills-inflight-requests
   (let [server (run-server (slow-request-handler 2000) {:port 3474})
         resp (future (try (http/get "http://localhost:3474")
                           (catch Exception e {:status "fail"})))]
@@ -378,7 +408,7 @@
     (server)
     (is (= "fail" (:status @resp)))))
 
-(deftest test-graceful-close-kills-long-inflight-requests
+(deftest test-graceful-stop-kills-long-inflight-requests
   (let [server (run-server (slow-request-handler 2000) {:port 3474})
         resp (future (try (http/get "http://localhost:3474")
                           (catch Exception e {:status "fail"})))]
@@ -386,7 +416,7 @@
     (server :timeout 100)
     (is (= "fail" (:status @resp)))))
 
-(deftest test-graceful-close-responds-to-inflight-requests
+(deftest test-graceful-stop-responds-to-inflight-requests
   (let [server (run-server (slow-request-handler 500) {:port 3474})
         resp (future (try (http/get "http://localhost:3474")
                           (catch Exception e {:status "fail"})))]
@@ -404,3 +434,44 @@
     (server)
     (is (= "hello world" (:body @resp)))
     (is (= 200 (:status @resp)))))
+
+(deftest test-server-status
+  (let [server (run-server (slow-request-handler 500) {:port 3474 :legacy-return-value? false})
+        resp_  (future (try (http/get "http://localhost:3474") (catch Exception e {:status "fail"})))]
+
+    (deref resp_ 100 nil) ; Ensure http/get has started
+
+    (is (= (server-status server) :running))
+    (let [f_ (future (server-stop! server {:timeout 1000}))]
+      (deref f_ 100 nil) ; Ensure stop call has started
+      (is (= (server-status server) :stopping))
+      (is (= (deref @f_ 1000 false) true)))
+
+    (is (= (server-status server) :stopped))
+    (is (= (:status @resp_) 200))))
+
+(deftest test-server-header
+  (let [url #(format "http://localhost:%s/headers?count=1" %)
+        get-server-header #(get-in (into {} %) [:headers "Server"])]
+
+    ;; Default header
+    (let [server (run-server (site test-routes) {:port 3476})
+          resp   (http/get (url 3476))]
+      (is (= (:status resp) 200))
+      (is (= "http-kit" (get-server-header resp)))
+      (server))
+
+    ;; Custom header
+    (let [server (run-server (site test-routes) {:port 3477 :server-header "my-server"})
+          resp   (http/get (url 3477))]
+      (is (= (:status resp) 200))
+      (is (= "my-server" (get-server-header resp)))
+      (server))
+
+    ;; No header
+    (let [server (run-server (site test-routes) {:port 3475 :server-header nil})
+          resp   (http/get (url 3475))]
+      (is (= (:status resp) 200))
+      (is (nil? (get-server-header resp)))
+      (server))))
+
